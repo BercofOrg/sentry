@@ -1,16 +1,22 @@
+import logging
+from hashlib import md5
+
 from django.contrib.auth.models import AnonymousUser
 from django.utils.crypto import constant_time_compare
-from django.utils.encoding import force_text
+from django.utils.encoding import force_text, force_bytes
 from django.conf import settings
 from rest_framework.authentication import BasicAuthentication, get_authorization_header
 from rest_framework.exceptions import AuthenticationFailed
 
 from sentry_relay import UnpackError
 
-from sentry.auth.system import SystemToken, is_internal_ip
+from sentry.auth.system import SystemToken, is_internal_ip, get_system_token
 from sentry.models import ApiApplication, ApiKey, ApiToken, ProjectKey, Relay
 from sentry.relay.utils import get_header_relay_id, get_header_relay_signature
 from sentry.utils.sdk import configure_scope
+
+
+logger = logging.getLogger("sentry.api.authentication")
 
 
 def is_internal_relay(request, public_key):
@@ -147,6 +153,16 @@ class TokenAuthentication(StandardAuthentication):
                 .get()
             )
         except ApiToken.DoesNotExist:
+            logger.info("tokenauthentication.invalid-token", extra={
+                "authorization_hash": md5(force_bytes(request.META["HTTP_AUTHORIZATION"])).hexdigest(),
+                "token_hash": md5(force_bytes(token_str)).hexdigest(),
+                "remote_addr": request.META["REMOTE_ADDR"],
+                "xff": request.META.get("HTTP_X_FORWARDED_FOR"),
+                "request_id": request.META.get("HTTP_X_REQUEST_ID"),
+                "is_internal_ip": is_internal_ip(request),
+                "is_system_token": constant_time_compare(get_system_token(), token_str),
+                "user_agent": request.META["HTTP_USER_AGENT"],
+            })
             raise AuthenticationFailed("Invalid token")
 
         if token.is_expired():
